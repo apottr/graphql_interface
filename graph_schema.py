@@ -54,41 +54,24 @@ def state_to_abbr(state):
              "WYOMING": "WY"}
     return abbrs[state]
     
-def gen_time_query(cols,data,year_toggle=True):
-    types = ['str_to_date(concat({}),"%c/%d/%y%T")',
-    'str_to_date(concat({}),"%c/%d/%Y%T")',
-    'str_to_date({})']
-    q = lambda x: "{} BETWEEN {} AND {}".format(x,'{}','{}')
+def gen_time(data):
     start = None
     end = None
-    col_toggle=True
-
     if data['timerange']:
         start = data['timerange'].get('start')
         end = data['timerange'].get('end')
     elif data['timestamp']:
+        #make end increment by one minute
         start = data['timestamp']
         end = data['timestamp']
     elif data['date']:
+        #make end increment by one day
         start = data['date']
         end = data['date']
         col_toggle=True
-    elif data['time']:
-        start = data['time']
-        end = data['time']
-        col_toggle=True
-    else:
-        return '1=1'
+    
+    return {"start": start, "end": end}
 
-    colarg = str(cols)[1:len(str(cols))-1]
-
-    if not col_toggle:
-        if year_toggle:
-            return q(types[0].format(colarg),start,end)
-        else:
-            return q(types[1].format(colarg),start,end)
-    else:
-        return q(types[3].format(colarg),start,end)
 
 class Geo(g.ObjectType):
     country = g.Field(g.String, required=True)
@@ -99,7 +82,6 @@ class Geo(g.ObjectType):
     timestamp = g.String()
     timerange = g.Field(g.String)
     date = g.String()
-    time = g.String()
     police = g.Field(g.List(Police),count=g.Argument(
                                             g.Int, default_value=1)
                                     ,offset=g.Argument(
@@ -111,23 +93,22 @@ class Geo(g.ObjectType):
     def resolve_police(self,args,context,info):
         offset = args.get("offset")
         count = args.get("count")
-        dat = gen_time_query(['date','time'],{
-                "timerange": self.timerange,
-                "timestamp": self.timestamp,
-                "date": self.date,
-                "time": self.time
-            })
+        print "help"
+        dat = gen_time({'timestamp': self.timestamp, 'timerange': self.timerange,'date': self.date})
         query = "SELECT * FROM panopticon.incidents WHERE ({}{}{}) AND {} LIMIT {}".format(
                         "city='{}'{}".format(self.city.upper(), 
                             ' AND ' if self.state else '') if self.city else '',
                         "chapter='{}'{}".format(self.state.upper(),
                             ' AND ' if self.county else '') if self.state else '',
                         "county='{}'".format(self.county.upper()) if self.county else '',
-                        dat,count)
+                        'str_to_date(concat(date,time),"%c/%d/%y%T") BETWEEN {} AND {}'
+                            .format(dat['start'],dat['end'])
+                        ,count)
         print query
         con = mysql.Connect(host="172.17.0.1",user="pandas",passwd="pandas")
         c = con.cursor()
         c.execute(query)
+        print "executed police query"
         return [Police(data=";;".join([str(obj) for obj in item])) for item in c.fetchall()]
         #return [Police(data="0,1,2,3,4,5,6,7,8,9,10,11,12,13,14") for i in range(0,count)]
     
@@ -139,6 +120,7 @@ class Geo(g.ObjectType):
             '(select shape from counties where county="{}" and state="{}"))',
             ' limit {}']).format(self.county.split(' ')[0],state_to_abbr(self.state.upper()),count)
         con = mysql.Connect(host="172.17.0.1", user="pandas", passwd="pandas", db="panopticon")
+        print "executing camera query"
         c = con.cursor()
         c.execute(q)
         dat = c.fetchall()
@@ -149,7 +131,6 @@ class Time(g.ObjectType):
     timestamp = g.Field(g.String)
     timerange = g.Field(g.String)
     date = g.Field(g.String)
-    time = g.Field(g.String)
     debug = g.String()
     geo = g.Field(Geo,country=g.Argument(g.String,default_value="usa")
             ,state=g.String()
@@ -157,8 +138,7 @@ class Time(g.ObjectType):
             ,city=g.String()
             ,timestamp=g.String()
             ,timerange=TimeRange()
-            ,date=g.String()
-            ,time=g.String())
+            ,date=g.String())
 
     police = g.Field(g.List(Police),count=g.Argument(
                                             g.Int, default_value=1)
@@ -182,26 +162,23 @@ class Time(g.ObjectType):
                 city=args.get("city"),
                 timestamp=self.timestamp,
                 timerange=self.timerange,
-                date=self.date,
-                time=self.time)
+                date=self.date)
     def resolve_police(self,args,context,info):
         return [Police(data="0,1,2,3,4,5,6,7,8,9,10,11,12,13,14") for i in range(0,args.get("count"))]
     
     def resolve_camera(self,args,context,info):
         #this function will take an id as an argument and return the images that are in the corresponding
         #temporal space
-        q = 'SELECT * FROM cameras WHERE filename LIKE "camera_{}-" AND {} LIMIT'.format(
+        obj = gen_time({'timestamp':self.timestamp,'timerange':self.timerange,'date':self.date})
+        q = 'SELECT * FROM cameras WHERE filename LIKE "camera_{}-%" AND {} LIMIT {}'.format(
                 str(args.get('id')),
-                gen_time_query(['date'],{
-                    'timestamp':self.timestamp,
-                    'timerange':self.timerange,
-                    'date':self.date,
-                    'time':self.time
-                    }),args.get("count"))
+                'date BETWEEN {} AND {}'.format(obj['start'],obj['end'])
+                ,args.get("count"))
         print q
         con = mysql.Connect(host="172.17.0.1", user="pandas", passwd="pandas", db="panopticon")
         c = con.cursor()
-        c.execute()
+        c.execute(q)
+        print "executed camera image query"
         return [CameraImages(data=";;".join([obj for obj in item])) for item in c.fetchall()]
 
     def resolve_rss(self,args,context,info):
@@ -213,11 +190,9 @@ class Query(g.ObjectType):
     rss = g.String()
     time = g.Field(Time,timestamp=g.String(),
                    timerange=TimeRange(),
-                   date=g.String(),
-                   time=g.String())
+                   date=g.String())
     
     def resolve_time(self,args,context,info):
         return Time(timestamp=args.get("timestamp"),
                    timerange=args.get("range"),
-                   date=args.get("date"),
-                   time=args.get("time"))
+                   date=args.get("date"))

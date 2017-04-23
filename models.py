@@ -12,7 +12,6 @@ class DataTransfer(g.ObjectType):
     timestamp = g.String()
     timerange = g.String()
     date = g.String()
-    time = g.String()
 
 class Rss(g.ObjectType):
     headlines = g.List(g.String)
